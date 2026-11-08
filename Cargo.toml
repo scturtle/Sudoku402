@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/sudoku-core", "crates/sudoku-web"]
+resolver = "2"

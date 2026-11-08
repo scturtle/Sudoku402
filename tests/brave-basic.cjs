@@ -1,0 +1,62 @@
+// Requires a fresh Brave profile on CDP :19222 and app HTTP :18765.
+async function main() {
+  let pages;
+  for (let i=0; i<80; i++) { try { pages=await (await fetch('http://127.0.0.1:19222/json')).json(); if(pages.length) break; } catch {} await new Promise(r=>setTimeout(r,250)); }
+  if(!pages?.length) throw Error('No Brave target');
+  const ws=new WebSocket(pages[0].webSocketDebuggerUrl); await new Promise((ok,fail)=>{ws.onopen=ok;ws.onerror=fail});
+  let id=0; const callbacks=new Map(); ws.onmessage=e=>{const m=JSON.parse(e.data); if(callbacks.has(m.id)){callbacks.get(m.id)(m);callbacks.delete(m.id)}};
+  const call=(method,params={})=>new Promise(resolve=>{const n=++id;callbacks.set(n,resolve);ws.send(JSON.stringify({id:n,method,params}))});
+  await call('Page.enable'); await call('Runtime.enable');
+  await call('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:3,mobile:true});
+  await call('Page.navigate',{url:'http://127.0.0.1:18765/'}); await new Promise(r=>setTimeout(r,3500));
+  const result=await call('Runtime.evaluate',{awaitPromise:true,returnByValue:true,expression:`(async()=>{
+    const wait=()=>new Promise(r=>setTimeout(r,100));
+    const home=document.querySelector('.home'), game=document.querySelector('.game-screen');
+    await document.fonts.ready;
+    const fontLoaded=[...document.fonts].some(f=>f.family==='SudokuFont'&&f.status==='loaded')&&getComputedStyle(home).fontFamily.includes('SudokuFont');
+    Math.random=()=>0;
+    const cells=()=>[...document.querySelectorAll('[role=gridcell]')];
+    const control=s=>[...document.querySelectorAll('.controls button')].find(b=>b.textContent===s);
+    const number=n=>[...document.querySelectorAll('.numbers button')].find(b=>b.textContent===String(n));
+    const visible=e=>!e.hidden;
+    const blank=i=>cells()[i].getAttribute('aria-label').includes('空');
+    const initial=visible(home)&&!visible(game)&&!home.textContent.includes('示例题')&&!!home.querySelector('.settings-button')&&!document.querySelector('.continue-row');
+    document.querySelector('.basic-course').click();await wait();
+    const entered=visible(game)&&!visible(home)&&cells().length===81&&cells().filter(c=>c.getAttribute('aria-label').includes('空')).length===21;
+    const layout=(()=>{const rect=document.querySelector('.board').getBoundingClientRect();const controls=[...document.querySelectorAll('.controls button')];return Math.abs(rect.left)<1&&Math.abs(rect.right-innerWidth)<1&&controls.length===5&&controls.every(b=>b.getBoundingClientRect().bottom<=rect.top+.1)})();
+    cells()[5].click();await wait();const popup=!!document.querySelector('.entry-popup');
+    number(1).click();await wait();
+    const wrong=cells()[5].classList.contains('conflict'); control('提示').click();await wait();const wrongFirst=cells()[5].classList.contains('hint-blue')&&document.querySelector('.message').textContent.includes('检查');
+    control('提示').click();await wait();const wrongTechnique=document.querySelector('.message').textContent.includes('Incorrect Entry');
+    control('提示').click();await wait();const wrongPreview=cells()[5].classList.contains('hint-orange')&&document.querySelector('.message').textContent.includes('与解答不符');
+    control('提示').click();await wait();const wrongCleared=blank(5);control('撤销').click();await wait();const undoWrong=cells()[5].classList.contains('conflict');
+    control('撤销').click();await wait();
+    control('提示').click();await wait();const fullStageOne=cells()[5].classList.contains('hint-blue')&&!document.querySelector('.hint-unit')&&!document.querySelector('.candidate-highlight,.candidate-remove');
+    control('提示').click();await wait();const fullStageTwo=document.querySelector('.message').textContent.includes('Full House')&&!document.querySelector('.hint-unit');
+    control('提示').click();await wait();
+    const hintPreview=document.querySelector('.message').textContent.includes('只剩一个空格')&&blank(5)&&document.querySelectorAll('.hint-unit').length===9&&cells()[5].querySelector('.candidate-highlight')?.textContent==='2';
+    control('提示').click();await wait();const applied=cells()[5].textContent.trim()==='2';
+    control('撤销').click();await wait();const undone=blank(5);
+    cells()[5].click();await wait();number(2).click();await wait();
+    document.querySelector('.back-button').click();await wait();
+    Math.random=()=>0.2; document.querySelector('.basic-course').click();await wait();const switchAsked=!!document.querySelector('[role=alertdialog]');
+    document.querySelector('.restart-cancel').click();await wait();
+    document.querySelector('.continue-row').click();await wait();const cancelPreserved=cells()[5].textContent.trim()==='2';
+    document.querySelector('.back-button').click();await wait();document.querySelector('.basic-course').click();await wait();document.querySelector('.restart-confirm').click();await wait();
+    const switched=visible(game)&&cells()[0].textContent.trim()==='8'&&blank(2)&&control('撤销').disabled;
+    const save=JSON.parse(localStorage.getItem('sudoku402.game.v1'));const saved=save.puzzle==='s401-9252'&&save.values.every(v=>v===0);
+    cells()[2].click();await wait();number(7).click();await wait();
+    const switchedSolution=cells()[2].textContent.trim()==='7'&&!cells()[2].classList.contains('conflict');
+    control('撤销').click();await wait();
+    return {fontLoaded,initial,entered,layout,popup,wrong,wrongFirst,wrongTechnique,wrongPreview,wrongCleared,undoWrong,fullStageOne,fullStageTwo,hintPreview,applied,undone,switchAsked,cancelPreserved,switched,switchedSolution,saved};
+  })()`});
+  const checks=result.result?.result?.value; if(!checks)throw Error(JSON.stringify(result));
+  await call('Page.reload');await new Promise(r=>setTimeout(r,2500));
+  const resumed=await call('Runtime.evaluate',{awaitPromise:true,returnByValue:true,expression:`(async()=>{const w=()=>new Promise(r=>setTimeout(r,100));document.querySelector('.continue-row').click();await w();const c=document.querySelectorAll('[role=gridcell]');return !document.querySelector('.game-screen').hidden&&c[0].textContent.trim()==='8'&&c[2].getAttribute('aria-label').includes('空')})()`});
+  checks.resumed=resumed.result.result.value;
+  await call('Runtime.evaluate',{expression:`localStorage.setItem('sudoku402.game.v1','{invalid')`});await call('Page.reload');await new Promise(r=>setTimeout(r,2500));
+  const corrupt=await call('Runtime.evaluate',{awaitPromise:true,returnByValue:true,expression:`(async()=>{const w=()=>new Promise(r=>setTimeout(r,100));const warning=!!document.querySelector('.save-warning').textContent.trim();document.querySelector('.basic-course').click();await w();return warning&&localStorage.getItem('sudoku402.game.v1')==='{invalid'})()`});
+  checks.corruptProtected=corrupt.result.result.value;
+  console.log(JSON.stringify(checks));ws.close();if(Object.values(checks).some(v=>!v))process.exitCode=1;
+}
+main().catch(e=>{console.error(e);process.exitCode=1});
